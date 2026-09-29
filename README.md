@@ -56,6 +56,7 @@
 
 - [Proxmox VM 인터넷 Egress 및 절전 독립성 구성](docs/proxmox-vm-internet-egress.md) — Proxmox Host 기반 NAT, Guest gateway 전환, Windows S3 독립성, 재부팅 persistence, VM LAN prefix 정규화 과정을 정리합니다.
 - [FastMCP 기반 다중 MCP Gateway 및 Headless 도구 연결 구성](docs/fastmcp-multi-upstream-headless-gateway.md) — ProxyProvider 기반 다중 upstream 통합, namespace·Tool Search, headless 응용프로그램 bridge, Secure MCP Tunnel, upstream RPC 로깅과 실제 E2E 검증 과정을 정리합니다.
+- [Proxmox Host 관리 접근 복구 및 USB Wi-Fi Uplink 영구화](docs/proxmox-host-usb-wifi-uplink.md) — GRUB 기반 root 접근 복구, Windows ICS 임시 egress, USB Wi-Fi 인증·DHCP·routing 검증, systemd와 ifupdown2 역할 분리, 재부팅 persistence 검증 과정을 정리합니다.
 
 ## 기여
 
