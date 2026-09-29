@@ -49,6 +49,10 @@
 - 검증 절차와 확인 결과
 - 실제 문제의 원인과 해결 방법
 
+## 문서 목록
+
+- [Proxmox VM 인터넷 Egress 및 절전 독립성 구성](docs/proxmox-vm-internet-egress.md) — Proxmox Host 기반 NAT, Guest gateway 전환, Windows S3 독립성, 재부팅 persistence, VM LAN prefix 정규화 과정을 정리합니다.
+
 ## 기여
 
 문서를 추가하거나 수정할 때는 [CONTRIBUTING.md](CONTRIBUTING.md)의 기준을 따릅니다.
