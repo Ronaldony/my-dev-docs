@@ -52,6 +52,7 @@
 ## 문서 목록
 
 - [Proxmox VM 인터넷 Egress 및 절전 독립성 구성](docs/proxmox-vm-internet-egress.md) — Proxmox Host 기반 NAT, Guest gateway 전환, Windows S3 독립성, 재부팅 persistence, VM LAN prefix 정규화 과정을 정리합니다.
+- [FastMCP 기반 다중 MCP Gateway 및 Headless 도구 연결 구성](docs/fastmcp-multi-upstream-headless-gateway.md) — ProxyProvider 기반 다중 upstream 통합, namespace·Tool Search, headless 응용프로그램 bridge, Secure MCP Tunnel, upstream RPC 로깅과 실제 E2E 검증 과정을 정리합니다.
 
 ## 기여
 
