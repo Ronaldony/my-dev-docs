@@ -6,7 +6,7 @@
 
 [다중 MCP Gateway 및 Headless 연결 문서](fastmcp-multi-upstream-headless-gateway.md)의 provider·namespace·Tool Search 구성을 전제로 한다. 이 문서는 그 구성 위에 추가한 인증·권한·외부 연결과 관련 이슈를 다룬다. 기존 문서의 서비스 호출 성공을 이번 OAuth 적용 후의 성공으로 합산하지 않는다.
 
-**확인된 최종 범위는 사용자 OAuth 재연결과 인증된 `tools/list`의 도구 7개 반환이다.** 새 플러그인을 통한 최종 서비스 작업, 실제 쓰기·권한 거부, 만료 후 refresh까지 모두 검증했다는 뜻은 아니다.
+**확인된 최종 범위는 사용자 OAuth 재연결, 현재 public surface 3개(`search_tools`, `get_tool_schema`, `call_tool`)의 metadata 반영, provider-aware `search → schema → call` 원격 호출, cross-provider 거부 및 stdio 기반 응용프로그램 읽기 성공까지다.** HTTP provider의 원격 MCP 호출도 확인했지만 해당 최종 호출은 request-context 조회였으므로 headless 응용프로그램 데이터 검증과 구분한다. 실제 원격 쓰기 거부와 만료 후 refresh는 아직 완료 범위에 포함하지 않는다.
 
 근거는 해당 작업의 설정·구현 조회, launcher와 Tunnel 진단, 운영 프로세스의 인증·도구 목록 로그, 테스트 종료 코드 및 Git 상태다. 이번 문서화에서 운영 서버를 다시 실행한 것은 아니다. 환경 고유값은 역할로 치환했으며, 아래 `<…>` 표현은 실제 입력으로 바꿔야 하는 자리표시자다.
 
@@ -90,7 +90,7 @@ Callback도 둘이다. Auth0에 등록하는 callback은 **공개 FastMCP OAuth 
 | 쓰기 도구 | `mcp.read`와 `mcp.write`를 모두 확인 |
 | 분류 불명 | 허용하지 않음; 확인된 override 또는 annotation으로 정책 결정 |
 
-도구 정책은 namespace 적용 후 이름을 사용했다. Scope 정책 transform을 Tool Search보다 먼저 구성하고, 전역 subject 검사는 `search_tools`, `call_tool`을 포함한 도구 목록에도 적용했다. 직접 노출 여부와 실행 권한은 다른 개념이다.
+도구 정책은 namespace 적용 후 이름을 사용했다. Scope 정책 transform을 provider-aware Tool Search보다 먼저 구성하고, 전역 subject 검사는 `search_tools`, `get_tool_schema`, `call_tool`을 포함한 public 도구 목록에도 적용했다. 검색 후보를 만들기 전에 권한이 적용된 catalog를 얻고, schema 조회와 실제 호출에서도 같은 권한 경로를 유지했다. 직접 노출 여부와 실행 권한은 다른 개념이다.
 
 `openid`·`offline_access`는 로그인·세션 관련 scope다. 두 값의 존재를 MCP 읽기·쓰기 권한으로 대신 취급하지 않았다. Refresh를 위한 설정이 준비된 상태와 실제 token 만료 후 refresh 성공은 구분했다.
 
@@ -249,7 +249,7 @@ flowchart TD
 
 원문은 로컬에서만 다뤘다. 작업 중 일회성 평문 캡처를 사용한 뒤 캡처 파일과 임시 코드를 제거했다. 이 캡처 방식은 최종 운영 기능으로 남기지 않았다. 제거 후 **디스크 코드·파일 정리**는 확인했지만, 이미 실행 중인 프로세스가 제거된 코드를 다시 로드했는지는 마지막 기록만으로 확인되지 않는다.
 
-허용 목록 변경 후 재기동된 운영 프로세스의 실제 요청에서 subject와 allowlist 지문이 일치하고 `subject_allowed=true`였으며, `tools/list`가 7개를 반환했다. 따라서 이 도구 0개 현상의 확인된 원인은 **로그인 identity와 allowlist의 불일치**다. 중간의 ChatGPT catalog·세션 오류 추정은 확정 원인으로 채택하지 않는다.
+허용 목록 변경 후 재기동된 운영 프로세스의 실제 요청에서 subject와 allowlist 지문이 일치하고 `subject_allowed=true`였으며, 당시 `always_visible` 정책 기준 `tools/list`가 7개를 반환했다. 따라서 도구 0개 현상의 확인된 원인은 **로그인 identity와 allowlist의 불일치**다. 이후 provider-aware routing을 적용하면서 application 도구 직접 고정 노출을 제거해 현재 public surface는 3개의 synthetic tool로 바뀌었다. 두 시점의 도구 개수를 같은 정책의 결과로 혼동하지 않는다.
 
 ## 8. 검증 방법과 결과
 
@@ -259,28 +259,45 @@ flowchart TD
 | 공개 OAuth 경로 | metadata HTTP 조회 | 필요한 metadata의 200 응답 확인 |
 | MCP 비공개 경계 | Funnel host의 `/mcp` 조회 | 404 확인; 전체 네트워크 보안 검사와는 구분 |
 | 실제 설정 반영 | 오래된 Process 값 주입 후 launcher 재실행 | listener의 challenge·resource가 새 설정으로 바뀜 |
-| Tunnel discovery | doctor, OAuth 상태 및 Harpoon target 확인 | 필수 진단 통과, 해당 구성의 자동 target 두 개 확인 |
+| Tunnel discovery | doctor, OAuth 상태 및 Harpoon target 확인 | 필수 진단 통과, 해당 구성의 자동 target 확인 |
 | Resource alias | 허용 alias와 다른 host로 `/authorize` 요청 | 허용값은 consent, 다른 host는 `invalid_target` |
-| 사용자 OAuth 재연결 | 사용자 보고와 후속 운영 요청 대조 | 재연결 성공 보고 및 인증 context가 있는 MCP 요청 확인 |
-| Subject 권한 | 같은 운영 요청의 context와 catalog 대조 | `subject_allowed=false`/0개에서 `true`/7개로 전환 |
-| 최종 공개 도구 목록 | 운영 PID의 최상위 `tool_list_catalog` | 직접 노출 도구 5개와 wrapper 2개, `nested=false` |
-| 자동 테스트 | 인증·HTTP fixture·로깅을 포함한 전체 pytest 실행 | exit 0; skip 존재, 모든 시나리오 실행으로 표기하지 않음 |
-| 최종 listener 상태 | MCP·health 포트 및 `/readyz` | 두 listener 확인, readiness HTTP 200 |
-| 코드·임시물 정리 | 소스 조회, 임시 공간 목록, Git hash/diff/status | 임시 캡처 코드·파일 제거와 clean 상태 확인; 실행 중 코드 재로딩은 미확인 |
+| Subject 권한 복구 | 같은 운영 요청의 context와 catalog 대조 | `subject_allowed=false`/0개에서 `true`/당시 7개로 전환 |
+| 현재 public surface | 인증된 최상위 `tools/list`와 클라이언트 metadata 대조 | `search_tools`, `get_tool_schema`, `call_tool` 3개 |
+| Progressive discovery | 실제 ChatGPT에서 search → schema → call | compact search, selected schema, stdio 응용프로그램 읽기 성공 |
+| Provider 경계 | 다른 app의 schema/call을 의도적으로 요청 | upstream 전송 전에 provider mismatch로 거부 |
+| HTTP provider 원격 호출 | provider-aware search와 request-context call | MCP provider 경로 성공; application data 성공으로 확대하지 않음 |
+| 자동 테스트 | 인증·routing·HTTP fixture·로깅을 포함한 전체 pytest | 35 passed, 2 skipped |
+| 장애 복구 | provider/bridge 중단·재기동 중 Gateway 유지 | 다른 provider 정상, 복구 후 Gateway 재시작 없이 재호출 성공 |
+| 최종 listener 상태 | Gateway·upstream listener 확인 | 검증 종료 시 모두 listen 상태 |
+| 코드·임시물 정리 | 임시 시험 파일과 Git 상태 확인 | 일회성 산출물 제거, Git clean 확인 |
 
-최종 운영 요청에서 반환된 목록은 다음과 같다.
+최종 public tool 목록은 다음과 같다.
 
 ~~~text
-blender_get_blendfile_summary_missing_files
-blender_get_blendfile_summary_path_info
-blender_get_object_detail_summary
-blender_get_objects_summary
-blender_get_screenshot_of_window_as_image
 search_tools
+get_tool_schema
 call_tool
 ~~~
 
-Blender namespace의 5개 도구는 당시 직접 노출 정책의 결과다. Unity를 포함한 검색형 도구 전체가 초기 목록에 나타나야 한다는 뜻이 아니다. 다만 **새 OAuth 플러그인에서 검색 후 실제 서비스 작업까지 완료한 최종 근거는 이번 기록에 없다.** 기존 Gateway 테스트나 이전 인증 방식의 호출과 구분한다.
+이전의 Blender namespace 5개 + wrapper 2개 구성은 subject 불일치 해결 직후의 직접 노출 정책이었다. 최종 provider-aware 구성에서는 application tool을 `always_visible`로 고정하지 않는다.
+
+현재 원격 호출 흐름은 다음과 같다.
+
+~~~text
+ChatGPT
+→ Secure MCP Tunnel
+→ 인증된 FastMCP Gateway
+→ search_tools(app, query, detail=brief)
+→ get_tool_schema(app, names, detail=detailed|full)
+→ call_tool(app, name, arguments)
+→ provider ownership + scope 확인
+→ ProxyProvider
+→ upstream MCP
+~~~
+
+서버의 Tool schema를 변경한 직후 기존 ChatGPT 세션에는 이전 metadata가 남아 있었다. 연결의 Tool metadata를 새로고침한 뒤 `get_tool_schema`를 포함한 최신 3-tool schema가 반영됐고, 위 흐름을 실제 클라이언트에서 다시 확인했다.
+
+---
 
 ## 9. 주요 이슈와 해결 과정
 
@@ -358,15 +375,26 @@ Blender namespace의 5개 도구는 당시 직접 노출 정책의 결과다. Un
 
 ## 10. 완료 범위와 남은 검증 경계
 
-이 작업에서는 **공개 OAuth 구성 → Tunnel discovery → resource alias 처리 → 인증된 MCP 요청 → subject 권한 확인 → 도구 목록 반환**까지 연결했다. 마지막 상태에서 FastMCP와 Tunnel listener 및 readiness도 확인했다.
+이 작업에서는 **공개 OAuth 구성 → Tunnel discovery → resource alias 처리 → subject 권한 복구 → provider-aware public surface → 원격 search/schema/call**까지 연결했다. 마지막 상태에서 Gateway와 두 upstream도 다시 기동된 상태로 확인했다.
+
+완료된 현재 경계는 다음과 같다.
+
+- 인증된 ChatGPT 연결에서 3개의 public tool metadata 확인
+- app별 compact search와 selected schema 조회
+- app/provider ownership을 벗어난 schema/call 거부
+- stdio provider의 실제 응용프로그램 읽기 호출
+- HTTP provider의 인증된 MCP 호출
+- provider/bridge 장애 중 다른 provider 유지 및 무재시작 복구
+- 전체 회귀 suite 35 passed, 2 skipped
+- routing·progressive disclosure 적용 후 Git clean
 
 다음은 이번 기록만으로 완료를 주장하지 않는 범위다.
 
 | 경계 | 기록상 상태 |
 |---|---|
-| 새 OAuth 플러그인의 실제 서비스 읽기·쓰기 | 최종 호출 근거 없음; 이전 Gateway 실행과 분리 |
-| 변경 후 다른 계정·축소 scope의 실제 ChatGPT 거부 시험 | 변경 전 subject 거부는 관측했으나, 변경 후 별도 부정 시험은 fixture와 구분 |
-| Token 만료 후 refresh와 장기 세션 유지 | 관련 설정은 적용했으나 만료 후 실증 근거 없음 |
-| 임시 캡처 코드 제거 후 실행 프로세스의 재로딩 | 디스크 정리·Git clean은 확인, 그 뒤 runtime 재로딩은 미확인 |
+| 현재 ChatGPT 연결의 실제 쓰기 권한 거부 | OAuth fixture의 scope 거부는 검증했지만 최종 원격 클라이언트의 별도 쓰기 부정 시험은 수행하지 않음 |
+| 변경 후 다른 계정·축소 scope의 실제 ChatGPT 거부 | 이전 subject 불일치와 fixture는 존재하나 현재 최종 policy의 별도 원격 부정 시험과 구분 |
+| Token 만료 후 refresh와 장기 세션 유지 | 관련 설정은 유지했으나 실제 만료 후 refresh 실증 근거 없음 |
+| 현재 provider-aware 경로의 HTTP headless 응용프로그램 데이터 | provider search와 MCP request-context 호출은 성공; application scene/Console의 이전 검증과 구분 |
 
-따라서 이 문서의 종료 상태는 **OAuth 연결과 인증된 tool discovery 정상화**다. 도구 목록 확인을 모든 서비스 동작·세션 수명 검증으로 확대하지 않는다.
+따라서 이 문서의 현재 종료 상태는 **OAuth 연결과 인증된 provider-aware tool discovery/call의 정상화**다. 목록·MCP debug 호출을 모든 쓰기 권한·세션 수명·응용프로그램 작업의 성공으로 확대하지 않는다.
