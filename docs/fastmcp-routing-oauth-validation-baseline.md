@@ -1,10 +1,10 @@
-# FastMCP Routing·OAuth Lifecycle 후속 검증 및 회귀 기준선
+# FastMCP Tool Routing 후속 Reliability 검증 및 회귀 기준선
 
 ## 1. 목적과 기록 범위
 
-provider-aware Tool Routing과 OAuth·Secure MCP Tunnel 구성을 적용한 뒤, 실제 운영 경로에서 남아 있던 검증 항목을 추가로 확인하고 이후 업그레이드에 사용할 회귀 기준선을 정리했다.
+`fastmcp-mcp-tool-routing.md`에서 확정한 provider-aware Tool Routing 구성을 대상으로, 실제 운영 환경에서의 안정성·복구성·동시성·회귀 특성을 확인하는 **후속 reliability 작업**을 수행했다. OAuth·Secure MCP Tunnel은 이 routing 경로의 실제 인증·재시작·세션 지속성을 검증하기 위한 운영 조건으로 함께 확인했다.
 
-이 문서는 다음 기존 문서를 변경하거나 대체하지 않고, 그 위에서 수행한 **후속 검증과 실제 이슈 수정**만 별도로 기록한다.
+이 문서는 기존 Routing 설계를 확장하거나 다시 설계하는 문서가 아니다. 다음 기존 문서를 변경하거나 대체하지 않고, 특히 `fastmcp-mcp-tool-routing.md` 작업 이후 수행한 **reliability 검증과 실제 안정성 이슈 수정**만 별도로 기록한다.
 
 - [FastMCP MCP Tool Routing 및 단계적 스키마 조회 구성](fastmcp-mcp-tool-routing.md)
 - [FastMCP OAuth·Secure MCP Tunnel 연결 및 도구 권한 검증](fastmcp-oauth-secure-tunnel-authorization.md)
