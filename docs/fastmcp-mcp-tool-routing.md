@@ -292,13 +292,13 @@ search_tools(app=...)
 
 ---
 
-## 10. Live 통합 검증
+## 10. Live 통합 및 검색 품질 검증
 
-provider-aware routing 적용 후 두 upstream을 함께 연결한 live catalog에서 namespaced 도구를 확인했다.
+provider-aware routing 적용 후 두 upstream을 함께 연결한 live catalog에서 namespaced 도구를 다시 확인했다.
 
 당시 catalog는 총 74개였고, 한 provider에서 26개, 다른 provider에서 48개가 발견됐다. 이 숫자는 해당 버전과 연결 상태의 관측값이며 고정된 합격 기준은 아니다.
 
-최종 public surface는 다음 세 도구였다.
+최종 public surface는 다음 세 도구다.
 
 ~~~text
 search_tools
@@ -315,10 +315,50 @@ call_tool
 - app A로 app B schema 요청 거부
 - app A로 app B call 요청 거부
 - stdio provider를 통한 실제 응용프로그램 상태 조회 성공
-- HTTP provider의 인증된 MCP 호출 성공
-- 원격 OAuth MCP 클라이언트에서 동일한 progressive workflow 성공
+- HTTP provider를 통한 실제 scene·Console 조회 성공
+- 원격 OAuth MCP 클라이언트에서 같은 `search → schema → call` 경로 성공
+- Blender와 Unity 요청을 동시에 실행해도 provider 실행 경로가 섞이지 않음
 
-HTTP provider의 마지막 원격 호출은 request-context 조회였다. 이 성공만으로 headless 응용프로그램의 scene·Console 데이터까지 같은 시점에 재검증했다고 확대하지 않는다. 응용프로그램 데이터 연결 자체의 기존 live 검증은 [다중 MCP Gateway 문서](fastmcp-multi-upstream-headless-gateway.md)에 기록돼 있다.
+### 10.1 Tool Search 품질
+
+검색 품질은 provider별 Golden Query Set으로 별도 측정했다.
+
+~~~text
+전체 질의: 84
+Top-3: 84 / 84
+Top-5: 84 / 84
+no-hit: 0
+
+한국어 질의: 42
+Top-3: 42 / 42
+
+영어 질의: 42
+Top-3: 42 / 42
+~~~
+
+한국어 normalization 적용 전에는 한국어 질의의 no-hit가 다수 발생했다. scene, object, modifier, find, validate, compile 등 실제 검증에서 필요했던 동의어를 선택적으로 보강한 뒤 기존 영어 결과의 regression 없이 위 결과를 확인했다.
+
+Golden Query Set과 별도로 만든 16개 holdout 표현도 Top-5 16/16을 기록했다. 이는 해당 유한 질의 집합의 결과이며 일반 자연어 전체에 대한 100% 정확도를 의미하지 않는다.
+
+### 10.2 실제 ChatGPT → Tunnel → Gateway E2E
+
+현재 ChatGPT 연결에서 실제 public tool을 사용해 다음 경로를 검증했다.
+
+~~~text
+ChatGPT
+→ Secure MCP Tunnel
+→ FastMCP Gateway
+→ search_tools
+→ get_tool_schema
+→ call_tool
+→ ProxyProvider
+→ upstream MCP
+→ application result
+~~~
+
+확대 검증 구간에서는 public 호출 21건을 관측했다. 정상 요청 19건은 성공했고, 나머지 2건은 의도적으로 수행한 cross-provider 호출과 unknown app 요청이 upstream 실행 전에 거부된 경우였다.
+
+실제 upstream `tools/call`은 7건이었고 Blender와 Unity 양쪽에서 응용프로그램 데이터를 반환했다. 해당 실행 trace에서 cross-provider 실제 실행은 0건이었고 RPC ID 충돌도 관측되지 않았다.
 
 ---
 
@@ -375,59 +415,130 @@ progressive disclosure의 목적은 search latency 자체를 줄이는 것이 �
 | HTTP scene/prefab | 약 902 ms | 약 898 ms | 약 898 ms | 약 1,796 ms | 13,417 B | 2,542 B | 81.1% |
 | HTTP animation/build | 약 890 ms | 약 895 ms | 약 894 ms | 약 1,789 ms | 16,735 B | 2,402 B | 85.6% |
 
-### 12.1 결과 해석
-
 compact rendering 자체는 search latency를 의미 있게 줄이지 않았다. provider catalog를 얻는 비용이 지배적이었다.
 
-한 도구를 선택하는 표준 workflow의 public call 수는 다음처럼 바뀐다.
-
-~~~text
-full-schema 방식
-search → call
-= 2회
-
-progressive 방식
-search → schema → call
-= 3회
-~~~
-
-따라서 discovery 단계의 네트워크·처리 지연은 증가한다. 반면 실제 전달되는 discovery payload는 대표 질의에서 약 61.7%~85.6% 감소했다.
-
-이 결과를 token 감소율로 직접 환산하지 않았다. UTF-8 byte 감소와 모델 token 사용량은 같은 단위가 아니다.
-
-최종 선택은 **호출 횟수와 latency 증가를 받아들이는 대신 모델 context에 전달하는 schema 크기를 줄이는 trade-off**였다.
+한 도구를 선택하는 표준 workflow는 `search → schema → call`로 public call이 하나 늘어나지만, 실제 전달되는 discovery payload는 대표 질의에서 약 61.7%~85.6% 감소했다. 이 결과를 token 감소율로 직접 환산하지 않았다.
 
 ---
 
-## 13. 자동 회귀 검증
+## 13. 동시성 이슈와 회귀 검증
 
-routing과 progressive disclosure 적용 후 전체 자동 테스트 결과는 다음과 같았다.
+### 13.1 stdio transport 공유 충돌
+
+동시 Blender/Unity 요청을 검증하는 과정에서 stdio provider에서 실제 세션 충돌이 재현됐다.
 
 ~~~text
-35 passed, 2 skipped
+one StdioTransport instance
+        ↓
+multiple ProxyClient sessions
+        ↓
+live session already in use
+        ↓
+catalog lookup failure
+        ↓
+valid tool reported as unknown/unauthorized
+~~~
+
+원인은 ProxyProvider의 client factory가 여러 client에 같은 `StdioTransport` 인스턴스를 재사용한 것이었다.
+
+해결은 구조를 바꾸지 않고 **client factory가 호출될 때마다 새 StdioTransport를 생성**하도록 최소 수정했다.
+
+수정 후 다음을 확인했다.
+
+- Blender/Unity 병렬 search와 call 성공
+- OAuth read/write/outsider context를 병렬 실행해 권한 context 혼입 없음
+- 각 RPC ID 고유
+- 한 실행 trace에서 Blender와 Unity 실제 `tools/call` 혼입 0건
+- fresh transport 생성 여부를 자동 회귀 테스트로 고정
+
+### 13.2 Catalog state
+
+동적 fixture에서 upstream catalog를 한 도구 집합에서 다른 집합으로 교체했다.
+
+검증 결과는 다음과 같다.
+
+- 새 tool이 다음 search에서 발견됨
+- 제거된 tool이 search에서 사라짐
+- 제거된 tool의 schema 조회 거부
+- 새 tool의 schema 조회 및 call 성공
+
+이 검증도 자동 회귀 테스트에 포함했다.
+
+### 13.3 자동 테스트
+
+최종 전체 pytest 결과는 다음과 같다.
+
+~~~text
+38 passed, 2 skipped
 ~~~
 
 skip은 선택 조건이 충족되지 않은 시험으로 남겼으며 성공으로 합산하지 않았다.
 
-주요 자동 검증 범위는 다음과 같다.
+주요 검증 범위는 다음과 같다.
 
 - public surface 3개 고정
 - app/provider별 검색 결과 격리
 - 기본 brief 결과에 전체 `inputSchema` 미노출
 - selected schema의 detailed/full 반환
 - unknown app 거부
-- cross-provider schema 거부
-- cross-provider call 거부
+- cross-provider schema/call 거부
 - 숨겨진 upstream tool 직접 호출 차단
-- namespace 유지
 - OAuth authorization-filtered catalog 보존
-- scope 부족 상태의 schema/call 우회 방지
+- stdio transport 동시성 회귀
+- catalog 변경 후 discovery 갱신
 - stdio 및 HTTP upstream 실제 검색·호출
-- 기존 Gateway logging·cancellation·rotation 회귀
+- logging·cancellation·rotation 회귀
 
 ---
 
-## 14. 최종 상태
+## 14. 버전 회귀 기준선
+
+현재 동작을 이후 업그레이드와 비교할 수 있도록 실행 버전과 행동 검증을 한 suite로 묶었다.
+
+확인된 기준은 다음과 같다.
+
+| 항목 | 기준 |
+|---|---|
+| Python | CPython 3.12.14 |
+| FastMCP | 4.0.5 |
+| Secure MCP Tunnel client | 0.0.15 계열, 실행 binary Git SHA까지 확인 |
+| stdio upstream MCP | 1.0.2 및 Git commit 확인 |
+| HTTP upstream | package lock의 Git hash와 Unity Editor 6000.6.0f1 확인 |
+| live catalog | 74개: provider A 26개, provider B 48개 |
+| public surface | `search_tools`, `get_tool_schema`, `call_tool` |
+| 검색 품질 | 84/84 Top-3, regression 0 |
+
+회귀 suite는 버전 확인, 전체 pytest, 검색 품질, live integration, catalog 수, public surface 및 두 provider의 실제 call 성공을 한 번에 검사했다.
+
+최종 실행에서는 16개 검사 항목이 모두 통과했다. provider 강제 장애 시험과 실제 ChatGPT E2E처럼 서비스 상태를 의도적으로 흔드는 검증은 자동 suite에서 매번 실행하지 않고 이미 확인된 외부 검증으로 분리했다.
+
+---
+
+## 15. GPT Tool Calling 관찰
+
+현재 ChatGPT 연결에서 자연어 요청이 provider와 tool을 선택하는 방식도 실제로 관찰했다.
+
+먼저 protocol 순서를 명시적으로 통제한 6개 시나리오에서는 모두 기대 흐름을 완료했다. 이후 기대값을 실행 후에만 확인하도록 한 별도 대화 세션 A/B/C에서 동일한 6개 요청을 반복했다.
+
+세 blind multi-turn 실행에서 확인된 사실은 다음과 같다.
+
+- 실행이 필요한 작업 12/12 완료
+- 기대 provider/tool 선택 15/15 정확
+- 실제 관측 가능한 기대 검색 결과는 모두 Top-1
+- 모호한 destructive 요청은 3/3 no-call
+- cross-provider 실제 실행 0건
+- authorization 문제 0건
+- full schema 요청 0건
+
+반면 엄격한 per-case rubric에서는 각 blind run이 2/6이었다. 주요 원인은 `get_tool_schema`를 매번 다시 호출하도록 요구한 기준을 모델이 자주 생략했고, 한 대화 안의 이전 provider/tool context를 다음 요청에서 재사용했기 때문이다.
+
+특히 `현재 씬 상태` 요청은 바로 앞의 Unity Console 요청과 같은 대화에 있었으므로 Unity를 선택한 행동을 **provider의 임의 선택이라고 단정할 수 없다.** 또한 두 provider를 동시에 확인하는 후속 요청에서는 직전 discovery 정보를 재사용한 사례가 있었다.
+
+따라서 이 결과에서는 **task/tool 선택 정확도와 protocol-step 준수를 분리해서 해석**했다. 낮은 strict score만으로 Gateway routing 결함이라고 판단하지 않았고, 이 관찰을 근거로 추가 Gateway 변경도 하지 않았다.
+
+---
+
+## 16. 최종 상태
 
 최종 discovery와 실행 계약은 다음과 같다.
 
@@ -448,9 +559,11 @@ provider ownership + authorization
     ↓
 ProxyProvider
     ↓
+fresh provider client / transport
+    ↓
 upstream MCP
 ~~~
 
-완료된 범위는 **provider-aware discovery, 단계적 schema 조회, provider 소속 검증, OAuth 권한 보존, 직접 호출 우회 차단, 실제 upstream 호출, 장애 격리·복구 및 성능 trade-off 측정**이다.
+완료된 범위는 **provider-aware discovery, 단계적 schema 조회, provider 소속 검증, OAuth 권한 보존, 직접 호출 우회 차단, 실제 upstream 호출, 장애 격리·복구, 동시성 수정, catalog 갱신, 검색 품질 측정, 버전 회귀 기준선 및 실제 GPT Tool Calling 관찰**이다.
 
 이 구조에서 namespace는 이름 충돌 방지와 소속 식별을 담당하고, app ID는 routing을 담당하며, BM25는 이미 선택된 provider 내부에서만 ranking을 수행한다.
