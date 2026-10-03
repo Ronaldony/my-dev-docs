@@ -56,8 +56,8 @@
 
 - [Proxmox VM 인터넷 Egress 및 절전 독립성 구성](docs/proxmox-vm-internet-egress.md) — Proxmox Host 기반 NAT, Guest gateway 전환, Windows S3 독립성, 재부팅 persistence, VM LAN prefix 정규화 과정을 정리합니다.
 - [FastMCP 기반 다중 MCP Gateway 및 Headless 도구 연결 구성](docs/fastmcp-multi-upstream-headless-gateway.md) — ProxyProvider 기반 다중 upstream 통합, namespace·Tool Search, headless 응용프로그램 bridge, Secure MCP Tunnel, upstream RPC 로깅과 실제 E2E 검증 과정을 정리합니다.
-- [FastMCP OAuth·Secure MCP Tunnel 연결 및 도구 권한 검증](docs/fastmcp-oauth-secure-tunnel-authorization.md) — 공개 OAuth와 비공개 MCP 경로 분리, launcher 환경변수·프로세스 관리, resource alias, Auth0 subject allowlist 불일치 해결과 인증된 도구 목록 검증 범위를 정리합니다.
-- [FastMCP MCP Tool Routing 및 단계적 스키마 조회 구성](docs/fastmcp-mcp-tool-routing.md) — app/provider hard routing, BM25 후보 격리, `search_tools → get_tool_schema → call_tool` progressive disclosure, cross-provider 차단, 장애 복구와 전달량·지연 검증을 정리합니다.
+- [FastMCP OAuth·Secure MCP Tunnel 연결 및 도구 권한 검증](docs/fastmcp-oauth-secure-tunnel-authorization.md) — 공개 OAuth와 비공개 MCP 경로 분리, resource alias·subject/scope 권한, encrypted OAuth state, Gateway/Tunnel 재시작 후 세션 재사용과 실제 ChatGPT E2E 검증을 정리합니다.
+- [FastMCP MCP Tool Routing 및 단계적 스키마 조회 구성](docs/fastmcp-mcp-tool-routing.md) — app/provider hard routing, BM25 후보 격리, progressive disclosure, cross-provider 차단, stdio 동시성 수정, 검색 품질·버전 회귀·실제 GPT Tool Calling 검증을 정리합니다.
 - [Proxmox Host 관리 접근 복구 및 USB Wi-Fi Uplink 영구화](docs/proxmox-host-usb-wifi-uplink.md) — GRUB 기반 root 접근 복구, Windows ICS 임시 egress, USB Wi-Fi 인증·DHCP·routing 검증, systemd와 ifupdown2 역할 분리, 재부팅 persistence 검증 과정을 정리합니다.
 - [Windows 사용자 영역 파일 손실 진단 및 Reset 기반 복구](docs/windows-user-profile-loss-reset-recovery.md) — PowerShell/CMD 삭제 명령 인용 오류 분석, Event Log 기반 원인 분리, rollback source 평가, 물리 디스크 분리 백업, Windows Cloud Reset 및 재검증 과정을 정리합니다.
 
