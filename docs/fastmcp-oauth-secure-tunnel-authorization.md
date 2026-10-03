@@ -6,13 +6,13 @@
 
 [다중 MCP Gateway 및 Headless 연결 문서](fastmcp-multi-upstream-headless-gateway.md)의 provider·namespace·Tool Search 구성을 전제로 한다. 이 문서는 그 구성 위에 추가한 인증·권한·외부 연결과 관련 이슈를 다룬다. 기존 문서의 서비스 호출 성공을 이번 OAuth 적용 후의 성공으로 합산하지 않는다.
 
-**확인된 최종 범위는 사용자 OAuth 재연결과 인증된 `tools/list`의 도구 7개 반환이다.** 새 플러그인을 통한 최종 서비스 작업, 실제 쓰기·권한 거부, 만료 후 refresh까지 모두 검증했다는 뜻은 아니다.
+초기 적용에서는 사용자 OAuth 재연결과 인증된 `tools/list`의 도구 7개 반환까지 확인했다. 후속 Gateway 적용에서는 **ChatGPT의 CIMD discovery, 정확한 Tunnel resource binding, authorization-code E2E, 인증된 최상위 도구 5개, 대표 읽기 호출, Gateway·Tunnel 재기동 후 세션 유지, 실제 access-token 만료 후 refresh와 token rotation까지 추가로 검증했다.** 운영 데이터 변경을 수반하는 실제 쓰기 작업과 장기 refresh-token 자연 만료는 별도 경계로 남겼다.
 
-근거는 해당 작업의 설정·구현 조회, launcher와 Tunnel 진단, 운영 프로세스의 인증·도구 목록 로그, 테스트 종료 코드 및 Git 상태다. 이번 문서화에서 운영 서버를 다시 실행한 것은 아니다. 환경 고유값은 역할로 치환했으며, 아래 `<…>` 표현은 실제 입력으로 바꿔야 하는 자리표시자다.
+근거는 각 작업의 설정·구현 조회, launcher와 Tunnel 진단, 운영 프로세스의 OAuth·도구 목록 로그, 실제 ChatGPT 플러그인 호출, 만료·refresh 시험, 테스트 종료 코드 및 Git 상태다. 후속 항목은 운영 Gateway와 Tunnel을 실제로 재기동하고 같은 세션의 읽기 호출까지 확인한 결과를 포함한다. 환경 고유값은 역할로 치환했으며, 아래 `<…>` 표현은 실제 입력으로 바꿔야 하는 자리표시자다.
 
 ## 2. 구성요소와 연결 경계
 
-사용한 핵심 기술은 Windows PowerShell, FastMCP 4.0.5, MCP Streamable HTTP, `OIDCProxy`·`OAuthProxy`, `JWTVerifier`, `AuthMiddleware`, Tool Search, Auth0, OpenID Connect, OAuth authorization code·PKCE, CIMD, Protected Resource Metadata, OpenAI Secure MCP Tunnel, Harpoon, Tailscale Funnel, Windows Credential Manager 및 Git이다. 버전은 작업 당시 확인값이며 다른 버전의 동작 보장이 아니다.
+사용한 핵심 기술은 Windows PowerShell, FastMCP 4.0.5, MCP Streamable HTTP, `OIDCProxy`·`OAuthProxy`, `JWTVerifier`, `AuthMiddleware`, Tool Search, Auth0, OpenID Connect, OAuth authorization code·PKCE, CIMD, Protected Resource Metadata, OpenAI Secure MCP Tunnel과 tunnel-client 0.0.15, Harpoon, Tailscale Funnel, Windows Credential Manager 및 Git이다. 버전은 작업 당시 확인값이며 다른 버전의 동작 보장이 아니다.
 
 ~~~mermaid
 flowchart LR
@@ -94,6 +94,14 @@ Callback도 둘이다. Auth0에 등록하는 callback은 **공개 FastMCP OAuth 
 
 `openid`·`offline_access`는 로그인·세션 관련 scope다. 두 값의 존재를 MCP 읽기·쓰기 권한으로 대신 취급하지 않았다. Refresh를 위한 설정이 준비된 상태와 실제 token 만료 후 refresh 성공은 구분했다.
 
+### 3.3 직접 호출 경로의 scope 강제
+
+후속 Gateway에서 FastMCP 4.0.5의 도구 목록·검색 단계에 scope 정책을 적용한 뒤, **직접 `tools/call` 경로가 같은 정책을 반드시 재검사하는지 별도 fixture로 확인했다.** 이 구성에서는 보완 전 읽기 전용 token으로 쓰기 fixture가 실행되는 경로를 재현했다.
+
+따라서 직접 호출 직전에 대상 component의 요구 scope와 subject 허용 여부를 다시 검사하는 middleware를 추가했다. 읽기 전용 token은 읽기 fixture만 통과하고 쓰기 fixture는 차단되며, `mcp.write`가 있는 token에서만 쓰기 fixture가 진행되는지 회귀 시험했다. Upstream annotation이 mutation 여부를 충분히 표현하지 못하는 도구는 명시적인 write override로 분류했다.
+
+이 보완은 **검토한 FastMCP 4.0.5와 해당 transform 순서에서 재현한 호환 조치**다. 다른 버전에서 동일한 우회가 존재한다고 일반화하지 않고, 설치 버전의 authorization dispatch를 다시 확인한다. 목록에서 숨기는 정책만으로 실행 권한이 강제된다고 가정하지 않는다.
+
 ## 4. 공개 OAuth와 비공개 resource 구성
 
 ### 4.1 URL의 역할 분리
@@ -102,8 +110,8 @@ Callback도 둘이다. Auth0에 등록하는 callback은 **공개 FastMCP OAuth 
 |---|---|
 | 로컬 MCP target | `http://127.0.0.1:<gateway-port>/mcp` |
 | 로컬 Protected Resource Metadata | 같은 origin의 `/.well-known/oauth-protected-resource/mcp` |
-| 공개 OAuth origin | `https://<oauth-public-host>`; `base_url`에 대응 |
-| 공개 OAuth callback | `https://<oauth-public-host>/auth/callback` |
+| 공개 OAuth origin | `https://<oauth-public-host>` 또는 `https://<oauth-public-host>/<gateway-oauth-prefix>`; `base_url`에 대응 |
+| 공개 OAuth callback | 공개 OAuth base의 `/auth/callback`; path prefix를 쓰면 callback에도 같은 prefix 유지 |
 | FastMCP canonical resource | `resource_base_url`과 MCP path로 정해지는 로컬 resource |
 | ChatGPT가 요청한 Tunnel resource | 해당 Tunnel의 client-facing resource URL |
 | Auth0 API audience | Auth0에 이미 등록한 API Identifier; 위 접속 주소와 별도로 유지 |
@@ -135,6 +143,34 @@ Secure MCP Tunnel의 MCP target
 
 이는 당시 확인한 경로의 공개 범위다. 단일 404 응답을 모든 경로·방화벽·다른 서비스의 보안 검증으로 확대하지 않는다.
 
+### 4.3 표준 443과 path namespace로 여러 OAuth Gateway 공존
+
+후속 Gateway를 추가할 때 기존 Gateway가 이미 같은 공개 host의 HTTPS 443 root OAuth route를 사용하고 있었다. 기존 서비스를 이동시키지 않기 위해 새 Gateway의 OAuth route를 처음에는 별도 HTTPS port에 배치했다. 서버 측에서는 local PRMD, 공개 Authorization Server Metadata, PKCE S256, CIMD 지원, Tunnel OAuth 상태가 모두 정상으로 보였지만 ChatGPT의 플러그인 생성 화면은 OAuth 설정을 채우지 못했고 `/authorize`, `/register`, `/token` 요청도 새 Gateway에 도달하지 않았다.
+
+원인을 분리하기 위해 Gateway·IdP·Client ID·audience·resource는 그대로 두고 **공개 OAuth 주소만 표준 443의 전용 path prefix로 옮기는 A/B**를 수행했다.
+
+~~~mermaid
+flowchart TB
+    Host["공개 HTTPS host :443"]
+    Root["root OAuth routes"]
+    Prefix["/<gateway-oauth-prefix>/..."]
+    G1["기존 FastMCP Gateway"]
+    G2["후속 FastMCP Gateway"]
+    T1["Secure MCP Tunnel A"]
+    T2["Secure MCP Tunnel B"]
+
+    Host --> Root --> G1
+    Host --> Prefix --> G2
+    T1 -->|private /mcp| G1
+    T2 -->|private /mcp| G2
+~~~
+
+후속 Gateway의 issuer는 `https://<oauth-public-host>/<gateway-oauth-prefix>` 형태가 되었다. path가 있는 issuer의 well-known discovery 호환성을 확인하기 위해 prefix 앞·뒤의 metadata route를 모두 제공했고, 실제 tunnel-client가 선택한 metadata URL과 응답 issuer를 대조했다. 이후 ChatGPT UI에서 CIMD, authorize/token/register endpoint, scope와 Tunnel resource가 자동 인식됐다.
+
+이 결과는 **해당 환경에서 비표준 HTTPS port와 표준 443 path-prefix가 discovery 성공 여부를 가른 관찰**이다. 특정 비표준 port를 ChatGPT가 일반적으로 지원하지 않는다고 단정하지 않는다. 서버 metadata가 정상인데 최종 클라이언트 UI만 discovery를 완료하지 못할 때 공개 OAuth origin의 형태를 독립 변수로 검사하는 근거로 사용한다.
+
+443 전환 뒤 Auth0 Allowed Callback URL도 새 공개 base의 `/auth/callback`으로 맞췄다. OAuth E2E와 대표 호출이 성공한 뒤 후속 Gateway의 이전 별도-port Funnel만 제거했다. 기존 443 root route는 그대로 보존했으며, 기존 Gateway 플러그인의 읽기 전용 대표 호출도 다시 성공해 영향이 없음을 확인했다.
+
 ## 5. Launcher와 실제 runtime 정합성
 
 ### 5.1 환경변수 우선순위
@@ -151,7 +187,20 @@ FastMCP 실행에는 `--skip-env`를 유지했다. `.env` 로딩을 launcher 한
 
 일부러 이전 resource/audience 값을 Process 환경에 넣고 launcher를 실행한 뒤, **실제 listener의 `WWW-Authenticate`와 metadata가 `.env`의 새 값으로 바뀌는지** 확인했다. 별도 셸의 preflight 성공만으로 runtime 반영을 판정하지 않았다.
 
-### 5.2 프로세스와 포트
+### 5.2 Path prefix와 trusted origin
+
+후속 Gateway의 OAuth base가 `https://<oauth-public-host>/<gateway-oauth-prefix>`로 바뀐 뒤 launcher가 그 전체 값을 `MCP_OAUTH_TRUSTED_ORIGINS`에 전달하자 tunnel-client 0.0.15의 doctor가 설정을 거부했다.
+
+~~~text
+mcp.oauth-trusted-origin:
+expected an absolute HTTP(S) origin without credentials, path, query, or fragment
+~~~
+
+`MCP_OAUTH_TRUSTED_ORIGINS`는 OAuth endpoint URL 목록이 아니라 **origin allowlist**이므로 launcher에서 URI의 authority 부분만 추출해 `https://<oauth-public-host>`를 전달하도록 수정했다. 반면 FastMCP의 `OAUTH_BASE_URL`은 path prefix를 포함한 전체 공개 OAuth base를 유지했다.
+
+수정 뒤 doctor, local PRMD, tunnel-client의 OAuth metadata 선택, Harpoon target 등록과 readiness를 다시 확인했다. `HARPOON_ALLOW_PLAINTEXT_HTTP`는 승인된 loopback PRMD/resource 처리에만 사용했고 공개 HTTP 허용으로 확대하지 않았다.
+
+### 5.3 프로세스와 포트
 
 MCP listener와 Tunnel health/admin listener의 점유 PID, 실행 파일, command line 및 프로필을 대조했다. 기존 Tunnel과의 중복 실행 때문에 health 포트 bind가 실패한 문제를 launcher의 중복 실행 방지·소유 프로세스 정리로 보완했다.
 
@@ -174,7 +223,7 @@ FastMCP의 실제 route를 확인해 필요한 Protected Resource Metadata 경�
 
 Tunnel은 로컬 Protected Resource Metadata와 공개 Authorization Server Metadata를 조회했다. PKCE S256, CIMD 및 authorize/token/registration endpoint를 확인했다. 이 배포에서는 신뢰하는 loopback HTTP target에 대해 `HARPOON_ALLOW_PLAINTEXT_HTTP`를 명시적으로 사용했다.
 
-그 결과 resource와 metadata source에 대응하는 Harpoon target 두 개가 자동 등록됐다. 이 개수는 당시 구성의 관측값이지 모든 배포의 필수 개수가 아니다. 로컬 HTTP 허용을 공개 HTTP 사용이나 resource 검증 해제로 확대하지 않았다.
+그 결과 resource와 metadata source에 대응하는 Harpoon target 두 개가 자동 등록됐다. 이 개수는 당시 구성의 관측값이지 모든 배포의 필수 개수가 아니다. **공개 HTTPS Authorization Server는 Harpoon target으로 자동 등록되지 않았지만, tunnel-client가 그 공개 endpoint의 metadata를 직접 조회해 OAuth discovery를 완료했으므로 이를 실패로 판정하지 않았다.** `MCP_OAUTH_TRUSTED_ORIGINS`도 공개 AS를 Harpoon target으로 만드는 설정이 아니라 trust 경계를 제한하는 설정으로 구분했다. 로컬 HTTP 허용을 공개 HTTP 사용이나 resource 검증 해제로 확대하지 않았다.
 
 ### 6.2 Tunnel resource alias
 
@@ -203,7 +252,19 @@ flowchart LR
 
 비교에는 당시 FastMCP의 `normalize_resource_url`을 사용했다. Query·fragment·trailing slash 처리가 포함된 **정규화 후 일치**이며 원문 byte 단위 일치나 임의 host/prefix 허용과는 다르다. Alias 설정은 HTTPS URL인지도 검사했다.
 
-허용 alias의 로컬·공개 `/authorize` 요청은 `/consent`로 진행했고, 다른 host의 resource는 `invalid_target`을 반환했다. 이후 사용자도 실제 ChatGPT 재연결 성공을 보고했다. 이 보완은 확인한 authorization 단계의 호환 처리이며, 모든 버전의 token·refresh·alias 조합에 대한 보안 검증을 의미하지 않는다.
+후속 Gateway에서는 ChatGPT UI가 표시한 **실제 client-facing Tunnel resource 전체 값**을 alias로 사용했다. 정확한 alias는 로컬 canonical resource로 변환되어 `/authorize → /consent`로 진행했고, 다른 Tunnel ID나 다른 host의 resource는 그대로 `invalid_target`으로 거부됐다.
+
+CIMD client ID `https://chatgpt.com/oauth/client.json`도 Gateway가 직접 조회·검증할 수 있음을 확인했다. 이후 실제 ChatGPT 흐름에서 다음 순서를 관측했다.
+
+~~~text
+/authorize         → 302
+/consent           → 200 → 302
+/auth/callback     → 302
+/token             → 200
+/mcp               → 200
+~~~
+
+같은 요청의 인증 context에서는 승인된 subject와 `mcp.read`, `mcp.write`, `openid`, `offline_access` scope가 확인됐다. 따라서 alias 보완은 authorization 진입뿐 아니라 code/token 교환과 인증된 MCP 요청까지 연결된 상태에서 검증됐다. resource 검사를 끄거나 Tunnel host 전체를 허용하지 않았다.
 
 ## 7. 인증된 도구 목록과 subject 불일치 진단
 
@@ -260,15 +321,22 @@ flowchart TD
 | MCP 비공개 경계 | Funnel host의 `/mcp` 조회 | 404 확인; 전체 네트워크 보안 검사와는 구분 |
 | 실제 설정 반영 | 오래된 Process 값 주입 후 launcher 재실행 | listener의 challenge·resource가 새 설정으로 바뀜 |
 | Tunnel discovery | doctor, OAuth 상태 및 Harpoon target 확인 | 필수 진단 통과, 해당 구성의 자동 target 두 개 확인 |
-| Resource alias | 허용 alias와 다른 host로 `/authorize` 요청 | 허용값은 consent, 다른 host는 `invalid_target` |
-| 사용자 OAuth 재연결 | 사용자 보고와 후속 운영 요청 대조 | 재연결 성공 보고 및 인증 context가 있는 MCP 요청 확인 |
+| Resource alias | 허용 alias와 다른 host/Tunnel resource로 `/authorize` 요청 | 정확한 client-facing alias는 consent 진행, 다른 resource는 `invalid_target` |
+| 사용자 OAuth 재연결 | 사용자 보고와 후속 운영 요청 대조 | 초기 Gateway 재연결 성공 및 인증 context가 있는 MCP 요청 확인 |
 | Subject 권한 | 같은 운영 요청의 context와 catalog 대조 | `subject_allowed=false`/0개에서 `true`/7개로 전환 |
-| 최종 공개 도구 목록 | 운영 PID의 최상위 `tool_list_catalog` | 직접 노출 도구 5개와 wrapper 2개, `nested=false` |
-| 자동 테스트 | 인증·HTTP fixture·로깅을 포함한 전체 pytest 실행 | exit 0; skip 존재, 모든 시나리오 실행으로 표기하지 않음 |
+| 초기 Gateway 최종 공개 도구 목록 | 운영 PID의 최상위 `tool_list_catalog` | 직접 노출 도구 5개와 wrapper 2개, 총 7개·`nested=false` |
+| 후속 Gateway 클라이언트 discovery A/B | 동일 backend 조건에서 공개 OAuth origin만 변경 | 별도 HTTPS port에서는 UI discovery 실패, 443 path prefix에서는 CIMD·endpoint·scope·resource 자동 인식 |
+| 후속 Gateway OAuth E2E | 공개 route와 운영 HTTP 로그 대조 | authorize→consent→callback→token 200→인증된 `/mcp` 200 |
+| 후속 Gateway 최상위 도구 목록 | 인증된 운영 `tools/list`와 auth context | 5개 반환, 승인 subject와 4개 scope 확인 |
+| 대표 읽기 호출 | 설치된 후속 앱에서 direct 및 Tool Search wrapper 호출 | 장치 목록 직접 호출 성공, `search_tools → call_tool → get_config` 성공 |
+| 기존 443 Gateway 영향 확인 | 별도-port Funnel 제거 뒤 기존 앱 읽기 호출 | 기존 root OAuth route 유지, 읽기 전용 Blender 호출 성공 |
+| 실제 refresh | 120초 client-facing TTL controlled test와 token/JTI metadata 대조 | 실제 만료 뒤 `/token` 200, access/refresh JTI 회전, MCP 호출 성공, 정상 TTL 86,400초로 복귀 |
+| 재시작 지속성 | Gateway와 Tunnel 전체를 정상 launcher로 재기동 후 같은 앱 호출 | 재로그인 없이 읽기 호출 성공 |
+| 자동 테스트 | 인증·HTTP fixture·로깅을 포함한 pytest 실행 | 초기 작업은 exit 0, 후속 Gateway는 17 passed; 각 실행 범위를 구분 |
 | 최종 listener 상태 | MCP·health 포트 및 `/readyz` | 두 listener 확인, readiness HTTP 200 |
-| 코드·임시물 정리 | 소스 조회, 임시 공간 목록, Git hash/diff/status | 임시 캡처 코드·파일 제거와 clean 상태 확인; 실행 중 코드 재로딩은 미확인 |
+| 코드·임시물 정리 | 소스 조회, 임시 공간 목록, Git hash/diff/status | 후속 TTL override·진단 파일 제거 및 clean 상태 확인; 초기 캡처 재로딩 여부는 기존 기록 범위 유지 |
 
-최종 운영 요청에서 반환된 목록은 다음과 같다.
+초기 Gateway의 최종 운영 요청에서 반환된 목록은 다음과 같다.
 
 ~~~text
 blender_get_blendfile_summary_missing_files
@@ -280,7 +348,19 @@ search_tools
 call_tool
 ~~~
 
-Blender namespace의 5개 도구는 당시 직접 노출 정책의 결과다. Unity를 포함한 검색형 도구 전체가 초기 목록에 나타나야 한다는 뜻이 아니다. 다만 **새 OAuth 플러그인에서 검색 후 실제 서비스 작업까지 완료한 최종 근거는 이번 기록에 없다.** 기존 Gateway 테스트나 이전 인증 방식의 호출과 구분한다.
+Blender namespace의 5개 도구는 당시 직접 노출 정책의 결과다. Unity를 포함한 검색형 도구 전체가 초기 목록에 나타나야 한다는 뜻이 아니다.
+
+후속 Gateway의 인증된 최상위 목록은 다음 5개였다.
+
+~~~text
+rdc_list_devices
+rdc_read_file
+rdc_list_directory
+search_tools
+call_tool
+~~~
+
+후속 앱에서 `rdc_list_devices`를 직접 호출했고, `search_tools`로 내부 catalog에서 `rdc_get_config`를 찾은 뒤 `call_tool`로 실행하는 간접 경로도 성공했다. 검색 과정에서 내부 catalog의 더 많은 도구가 보였지만, 그것을 최상위 직접 노출 목록과 합산하지 않았다.
 
 ## 9. 주요 이슈와 해결 과정
 
@@ -356,17 +436,67 @@ Blender namespace의 5개 도구는 당시 직접 노출 정책의 결과다. Un
 
 **결과:** 코드 변경 없이 index 상태가 정리됐으므로 추가 코드 커밋은 만들지 않았다.
 
+### 9.7 직접 `tools/call`의 scope 우회
+
+**이슈 내용과 발생 시점:** 후속 Gateway의 권한 회귀 시험에서 읽기 전용 token이 목록 정책상 쓰기 도구를 볼 수 없어도 직접 호출 경로에서 쓰기 fixture가 실행될 수 있었다.
+
+**발생 원인 추적:** FastMCP 4.0.5의 해당 구성에서 목록/visibility transform과 실제 `tools/call` dispatch의 권한 검사 경계가 같지 않았다.
+
+**해결 과정:** 직접 호출 직전 대상 component의 subject와 요구 scope를 다시 검사하는 middleware를 추가하고, mutation annotation이 모호한 upstream 도구는 명시적인 write override로 분류했다.
+
+**검증:** 읽기 전용 token의 쓰기 fixture 거부, 읽기 fixture 허용, 쓰기 scope token의 쓰기 fixture 허용을 자동 시험했다.
+
+**결과:** 목록 노출 정책과 직접 실행 권한을 별도 경계로 강제했다. 이 결과는 FastMCP 4.0.5의 검토한 구성에 한정한다.
+
+### 9.8 서버 metadata 정상인데 ChatGPT OAuth discovery 실패
+
+**이슈 내용과 발생 시점:** 후속 Gateway에서 PRMD·공개 AS metadata·Tunnel OAuth 상태는 정상이었지만 ChatGPT 플러그인 생성 UI가 OAuth 설정을 찾지 못했다.
+
+**발생 원인 추적:** 당시 요청 로그에는 PRMD 조회만 있고 `/authorize`, `/register`, `/token`이 없었다. Gateway의 CIMD parser는 `https://chatgpt.com/oauth/client.json`을 직접 검증할 수 있었고, 저장된 Auth0 client secret도 값 노출 없이 별도 token-endpoint 진단에서 client 인증 단계가 거부 원인이 아님을 확인했다. 따라서 실패 경계는 downstream authorization보다 앞선 hosted discovery로 좁혀졌다.
+
+**해결 과정:** 기존 Gateway의 443 root route를 유지하고 후속 Gateway의 공개 OAuth origin만 별도 HTTPS port에서 443 전용 path prefix로 이동했다. Auth0 callback도 새 base에 맞췄다.
+
+**검증:** 동일한 backend 조건에서 UI가 CIMD, endpoint, scope, Tunnel resource를 자동 인식했고 이후 실제 authorization-code E2E가 성공했다.
+
+**결과:** 해당 환경에서는 공개 OAuth origin 형태가 discovery 성공 여부를 가른 변수였다. 비표준 port 전체의 일반적 비호환으로 확대하지 않는다.
+
+### 9.9 Path가 포함된 trusted origin
+
+**이슈 내용과 발생 시점:** 443 path-prefix 전환 후 Tunnel 재기동에서 doctor가 OAuth trusted origin 설정을 거부했다.
+
+**발생 원인 추적:** launcher가 path를 포함한 전체 `OAUTH_BASE_URL`을 `MCP_OAUTH_TRUSTED_ORIGINS`에 복사했다. tunnel-client 0.0.15는 이 값을 HTTP(S) origin으로 제한했다.
+
+**해결 과정:** launcher가 OAuth base의 scheme·host·port만 추출해 trusted origin으로 전달하도록 수정했다.
+
+**검증:** doctor 통과, OAuth metadata 선택, Harpoon target, readiness 및 후속 ChatGPT 호출을 확인했다.
+
+**결과:** FastMCP의 공개 OAuth base와 tunnel-client의 trusted origin 역할을 분리했다.
+
+### 9.10 실제 만료 후 refresh 즉시 검증
+
+**이슈 내용과 발생 시점:** Auth0가 발급한 access token의 실제 TTL이 24시간이라 자연 만료를 기다리면 refresh 검증이 지연됐다.
+
+**발생 원인 추적:** FastMCP 4.0.5는 upstream `expires_in`을 기본 client-facing access-token TTL로 사용했고, 암호화된 file-backed OAuth state에는 upstream token, access/refresh JTI와 refresh metadata가 재기동 후에도 유지됐다.
+
+**해결 과정:** 진단 동안 FastMCP client-facing access token TTL만 120초로 임시 설정했다. 이미 발급된 24시간 JWT의 `exp`는 바뀌지 않으므로 현재 access JTI mapping만 식별해 무효화하고 refresh JTI와 upstream refresh token은 보존했다.
+
+**검증:** 첫 호출에서 `/mcp 401 → /token 200 → /mcp 200`을 확인했다. 새 access JTI가 120초였고, 실제 120초 만료 뒤 같은 읽기 호출에서 두 번째 `/token 200`, 새 access/refresh JTI rotation 및 MCP 성공을 확인했다. 임시 TTL을 제거한 뒤 다음 refresh에서 access JTI가 86,400초로 복귀했고, Gateway·Tunnel 전체 재기동 후에도 재로그인 없이 호출이 성공했다.
+
+**결과:** client→Gateway refresh, Gateway→Auth0 refresh, FastMCP token rotation, 정상 TTL 복귀와 재시작 지속성까지 실제 만료 조건에서 검증했다. 임시 TTL 코드와 진단 파일은 제거했다.
+
 ## 10. 완료 범위와 남은 검증 경계
 
-이 작업에서는 **공개 OAuth 구성 → Tunnel discovery → resource alias 처리 → 인증된 MCP 요청 → subject 권한 확인 → 도구 목록 반환**까지 연결했다. 마지막 상태에서 FastMCP와 Tunnel listener 및 readiness도 확인했다.
+초기 Gateway에서는 **공개 OAuth 구성 → Tunnel discovery → resource alias 처리 → 인증된 MCP 요청 → subject 권한 확인 → 도구 7개 반환**까지 연결했다. 후속 Gateway에서는 여기에 **443 path-prefix 기반 discovery 복구, exact Tunnel resource binding, CIMD authorization-code E2E, 최상위 도구 5개, direct·search/call 대표 읽기, 실제 만료 후 refresh·rotation, 정상 TTL 복귀, Gateway·Tunnel 재시작 후 세션 유지**까지 추가로 확인했다.
 
-다음은 이번 기록만으로 완료를 주장하지 않는 범위다.
+최종 후속 세션의 access JTI는 다시 86,400초 TTL로 발급됐고 refresh JTI와 metadata는 장기 세션용 상태로 유지됐다. 진단에 사용한 120초 TTL override와 임시 파일은 제거했으며 Gateway 저장소는 clean 상태로 복귀했다.
+
+다음은 여전히 별도 검증 경계다.
 
 | 경계 | 기록상 상태 |
 |---|---|
-| 새 OAuth 플러그인의 실제 서비스 읽기·쓰기 | 최종 호출 근거 없음; 이전 Gateway 실행과 분리 |
-| 변경 후 다른 계정·축소 scope의 실제 ChatGPT 거부 시험 | 변경 전 subject 거부는 관측했으나, 변경 후 별도 부정 시험은 fixture와 구분 |
-| Token 만료 후 refresh와 장기 세션 유지 | 관련 설정은 적용했으나 만료 후 실증 근거 없음 |
-| 임시 캡처 코드 제거 후 실행 프로세스의 재로딩 | 디스크 정리·Git clean은 확인, 그 뒤 runtime 재로딩은 미확인 |
+| 실제 운영 데이터 변경을 수반하는 쓰기 호출 | 수행하지 않음; write scope 강제는 격리 fixture로 검증 |
+| 최종 상태에서 다른 계정·축소 scope를 사용한 실제 ChatGPT 부정 시험 | 초기 subject 불일치는 실관측, 후속 Gateway의 negative path는 fixture와 잘못된 resource 시험으로 분리 |
+| 장기 refresh token의 자연 만료 | 실제 access 만료와 refresh rotation은 실증했으나 약 1년 refresh-token 수명 전체는 기다리지 않음 |
+| 초기 Gateway의 일회성 subject 캡처 코드 제거 후 당시 프로세스 재로딩 | 기존 기록의 미확인 범위이며 후속 Gateway의 재시작 검증과 별도 |
 
-따라서 이 문서의 종료 상태는 **OAuth 연결과 인증된 tool discovery 정상화**다. 도구 목록 확인을 모든 서비스 동작·세션 수명 검증으로 확대하지 않는다.
+따라서 현재 문서의 종료 상태는 **두 Gateway의 OAuth·Secure Tunnel 연결, 인증된 tool discovery, 대표 읽기 호출 및 후속 Gateway의 실제 refresh 지속성 검증 완료**다. 쓰기 실서비스 작업과 장기 refresh-token 자연 만료는 이 결과에 포함하지 않는다.
