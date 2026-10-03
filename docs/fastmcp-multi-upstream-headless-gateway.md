@@ -9,8 +9,7 @@
 - 서로 다른 transport를 사용하는 MCP 서버를 하나의 Gateway에서 통합한다.
 - 각 upstream MCP의 원본 도구 정의를 ProxyProvider를 통해 자동 발견한다.
 - namespace를 적용해 서로 다른 MCP의 도구 이름 충돌을 방지한다.
-- upstream 대상은 명시적인 app/provider 식별자로 먼저 한정하고, 해당 provider 내부에서만 Tool Search를 수행한다.
-- 초기 목록은 검색·스키마 조회·호출 진입점으로 제한하고, 필요한 도구 정보만 단계적으로 가져온다.
+- 자주 사용하는 도구만 초기 목록에 직접 노출하고, 나머지는 Tool Search로 필요할 때 찾는다.
 - headless로 실행되는 응용프로그램의 MCP bridge를 실제 서비스 데이터까지 연결한다.
 - 하나의 upstream 장애가 다른 upstream의 호출을 막지 않도록 연결을 분리한다.
 - localhost의 Gateway를 인증된 외부 연결 계층을 통해 원격 MCP 클라이언트와 연결한다.
@@ -31,8 +30,8 @@ flowchart TB
     Tunnel["Authenticated external connection"]
     Gateway["FastMCP Gateway"]
 
-    Route["app/provider routing"]
-    Search["BM25 discovery / schema lookup"]
+    Search["Tool exposure / Tool Search"]
+    Route["Namespace / routing"]
     ProxyA["ProxyProvider A"]
     ProxyB["ProxyProvider B"]
 
@@ -47,10 +46,10 @@ flowchart TB
 
     Client <--> Tunnel
     Tunnel <--> Gateway
-    Gateway --> Route
-    Route --> Search
-    Search --> ProxyA
-    Search --> ProxyB
+    Gateway --> Search
+    Search --> Route
+    Route --> ProxyA
+    Route --> ProxyB
     ProxyA <--> MCPA
     ProxyB <--> MCPB
     MCPA <--> BridgeA
@@ -63,7 +62,7 @@ flowchart TB
 
 | 구성요소 | 역할 |
 |---|---|
-| FastMCP Gateway | upstream 집계, app/provider routing, namespace 적용, 단계적 도구 discovery·schema 조회, 호출 중계, Gateway 로그 |
+| FastMCP Gateway | upstream 집계, namespace 적용, 도구 노출·검색, 호출 중계, Gateway 로그 |
 | ProxyProvider / ProxyClient | upstream MCP discovery와 실제 MCP 호출 중계 |
 | stdio MCP | Gateway가 transport의 일부로 MCP 자식 프로세스를 실행하고 표준 입출력으로 통신 |
 | HTTP MCP | 별도로 실행 중인 MCP endpoint에 Gateway가 연결 |
@@ -127,101 +126,57 @@ Gateway: service_b_read_status
 
 ---
 
-## 4. Provider-aware Tool Routing과 단계적 스키마 조회
+## 4. Tool 노출과 검색 구성
 
-최종 구성에서는 **어느 upstream을 대상으로 할지 결정하는 routing**과 **그 provider 안에서 관련 도구를 찾는 ranking**을 분리했다.
+upstream에서 발견한 모든 도구 스키마를 MCP 클라이언트에 처음부터 직접 노출하지 않고, 자주 사용하는 일부 도구와 검색·호출 진입점만 초기 목록에 제공하도록 구성했다.
 
-namespace는 도구 이름 충돌을 방지하고 소속을 식별하는 데 사용한다. 별도로 안정적인 app ID와 namespace의 대응을 유지하고, 클라이언트가 app을 명시하면 해당 provider의 namespaced 도구만 BM25 후보에 포함한다. app 이름 길이에 따른 자동 약어화는 사용하지 않았다.
-
-초기 `tools/list`의 public surface는 응용프로그램 도구를 직접 고정 노출하지 않고 다음 세 진입점으로 제한했다.
+FastMCP의 BM25SearchTransform을 사용했다.
 
 ~~~text
-search_tools
-get_tool_schema
-call_tool
+전체 upstream tool catalog
+        │
+        ├─ 자주 사용하는 도구
+        │      └─ initial tool list에 직접 노출
+        │
+        └─ 나머지 도구
+               └─ Tool Search 대상
+                     │
+                     ├─ search_tools
+                     └─ call_tool
 ~~~
+
+### 4.1 Public 도구
+
+반복적으로 사용하는 조회형 도구 일부를 always_visible 대상으로 두었다.
+
+이 도구들은 클라이언트가 초기 tools/list 단계에서 바로 스키마를 받을 수 있다.
+
+### 4.2 Searchable 도구
+
+직접 노출하지 않은 도구는 Tool Search를 통해 검색한다.
+
+호출 흐름은 다음과 같다.
 
 ~~~mermaid
-flowchart TD
-    C["MCP Client"] --> S["search_tools(app, query, detail=brief)"]
-    S --> V["권한이 적용된 전체 catalog"]
-    V --> R["app → namespace 후보 hard filter"]
-    R --> B["BM25 ranking"]
-    B --> K["compact candidate list"]
-    K --> G["get_tool_schema(app, names)"]
-    G --> O["provider ownership + 권한 재검증"]
-    O --> X["selected schema"]
-    X --> T["call_tool(app, name, arguments)"]
-    T --> P["provider ownership + 권한 재검증"]
-    P --> U["ProxyProvider → upstream MCP"]
+sequenceDiagram
+    participant C as MCP Client
+    participant G as FastMCP Gateway
+    participant U as Upstream MCP
+    participant A as Application
+
+    C->>G: search_tools(query)
+    G-->>C: tool name + input schema
+    C->>G: call_tool(name, arguments)
+    G->>U: tools/call
+    U->>A: application operation
+    A-->>U: result
+    U-->>G: MCP result
+    G-->>C: result
 ~~~
 
-### 4.1 Provider 후보를 BM25 이전에 제한
+검색 결과에서 반환한 이름과 입력 스키마를 그대로 사용해 call_tool을 호출했다.
 
-기존 전체 catalog BM25 검색에서는 특정 응용프로그램을 질의에 적어도 다른 upstream의 공통 용어가 점수를 얻을 수 있었다. 최종 구성은 검색 문자열에 app 이름을 덧붙이는 대신 다음 순서로 처리한다.
-
-~~~text
-인증·권한이 적용된 catalog
-        ↓
-app 식별자 검증
-        ↓
-app에 대응하는 namespace 도구만 후보로 제한
-        ↓
-BM25 ranking
-        ↓
-상위 결과 반환
-~~~
-
-따라서 app 선택은 검색 힌트가 아니라 routing 조건이다. 존재하지 않는 app을 요청하면 전체 검색으로 fallback하지 않고 오류로 처리한다.
-
-현재 구현의 ownership 검사는 **등록된 app ID → namespace 대응과 namespaced tool prefix**를 기준으로 한다. 이 방식은 현재 provider 구성이 명확한 환경에서 검증한 계약이며, 중첩 namespace나 별도 ownership metadata를 사용하는 다른 구현에 그대로 일반화하지 않는다.
-
-### 4.2 Progressive disclosure
-
-`search_tools`는 기본 `detail=brief`에서 도구 이름과 압축된 설명만 반환한다. 후보를 고른 뒤 `get_tool_schema`로 선택한 도구의 파라미터를 가져온다.
-
-- `brief`: 후보 선택용 이름·짧은 설명
-- `detailed`: 파라미터 이름·타입·필수 여부 중심의 compact schema
-- `full`: 전체 MCP tool schema
-
-일반 호출 흐름은 다음과 같다.
-
-~~~text
-search_tools(app, query)
-        ↓
-후보 도구 선택
-        ↓
-get_tool_schema(app, names, detail=detailed)
-        ↓
-필요하면 detail=full
-        ↓
-call_tool(app, name, arguments)
-~~~
-
-이 구조의 목적은 search 단계에서 상위 여러 도구의 전체 JSON schema를 매번 반환하지 않는 것이다.
-
-### 4.3 호출 경계
-
-`get_tool_schema`와 `call_tool`에서도 app과 namespaced tool의 소속을 다시 확인한다. 다른 provider의 이름을 app과 조합하면 upstream 호출 전에 거부한다.
-
-Tool Search transform이 활성화된 경로에서는 숨겨진 원본 upstream 도구의 직접 호출도 허용하지 않고, 검증된 `call_tool(app, ...)` 경로로만 실행되게 했다. 따라서 discovery와 execution이 같은 provider 경계를 공유한다.
-
-검색은 실행 권한을 대신하지 않는다. OAuth가 활성화된 구성에서는 권한이 적용된 catalog를 먼저 얻은 뒤 provider filter를 적용하고, schema 조회와 실제 호출에서도 동일 권한 경로를 유지한다.
-
-### 4.4 전달량과 지연의 trade-off
-
-같은 provider-aware 구현과 같은 live upstream에서 5회 반복 median으로 `search_tools(detail=full)`과 기본 `brief + 선택 도구 detailed schema`를 비교했다. 이는 이전 소프트웨어 리비전과의 비교가 아니라 **현재 구현 안에서 discovery 표현 방식을 비교한 측정**이다.
-
-| 대표 질의 | full search | brief search | 선택 schema | brief+schema | full payload | brief+schema payload | 감소 |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| stdio upstream의 scene/object 조회 | 약 896 ms | 약 894 ms | 약 890 ms | 약 1,785 ms | 3,325 B | 1,275 B | 61.7% |
-| stdio upstream의 Python 실행 검색 | 약 911 ms | 약 901 ms | 약 893 ms | 약 1,794 ms | 7,314 B | 1,418 B | 80.6% |
-| HTTP upstream의 scene/prefab 검색 | 약 902 ms | 약 898 ms | 약 898 ms | 약 1,796 ms | 13,417 B | 2,542 B | 81.1% |
-| HTTP upstream의 animation/build 검색 | 약 890 ms | 약 895 ms | 약 894 ms | 약 1,789 ms | 16,735 B | 2,402 B | 85.6% |
-
-compact rendering 자체는 search latency를 의미 있게 줄이지 않았다. provider catalog 조회 비용이 지배적이었다. 한 도구를 선택하는 표준 흐름에서는 public 호출이 `search + call` 2회에서 `search + schema + call` 3회로 늘고 discovery 지연도 증가하지만, 전달되는 schema 데이터는 크게 줄었다.
-
-따라서 이 변경은 latency 최적화가 아니라 **모델 context와 불필요한 schema 노출을 줄이기 위한 trade-off**로 적용했다.
+검색은 도구 선택을 위한 기능이며, 실제 application 호출은 call_tool 이후 upstream MCP의 tools/call에서 발생한다.
 
 ---
 
@@ -276,23 +231,25 @@ Gateway의 기본 연결을 구성한 뒤 두 upstream을 함께 연결해 catal
 - HTTP MCP를 통해 응용프로그램 Console 및 scene 정보를 읽을 수 있었다.
 - stdio MCP의 문서 도구와 실제 응용프로그램 의존 도구를 호출할 수 있었다.
 
-### 6.1 장애 분리와 무재시작 복구
+### 6.1 장애 분리
 
-provider-aware routing 적용 후 양쪽 연결을 다시 중단·복구하며 격리를 검증했다.
+한 upstream을 중지한 상태에서 기존 Gateway를 그대로 유지했다.
 
-첫 번째 경로에서는 stdio upstream이 의존하는 headless 응용프로그램 bridge를 중지했다. 그 동안 HTTP provider의 검색과 실제 MCP 호출은 계속 성공했고 Gateway listener는 유지되었다. bridge를 다시 실행한 뒤 Gateway를 재시작하지 않고 stdio provider의 검색과 응용프로그램 조회가 복구되었다.
+결과는 다음과 같았다.
 
-두 번째 경로에서는 HTTP 기반 headless 응용프로그램을 종료해 launcher가 소유한 HTTP MCP server까지 함께 정리되는 상태를 만들었다. 이 동안 stdio provider의 검색과 실제 응용프로그램 조회는 계속 성공했다. HTTP MCP와 응용프로그램을 다시 기동한 뒤에도 Gateway 재시작 없이 해당 provider의 검색과 호출이 복구되었다.
+~~~text
+Upstream A unavailable
+    ↓
+A tools unavailable
 
-~~~mermaid
-flowchart TD
-    FailA["Provider/bridge A unavailable"] --> Keep["FastMCP Gateway remains running"]
-    Keep --> B["Provider B search/call remains available"]
-    RecoverA["A restarted"] --> Same["same Gateway process"]
-    Same --> ABack["A search/call recovers"]
+FastMCP Gateway remains running
+    ↓
+Upstream B tools remain callable
 ~~~
 
-이 검증으로 한 provider 또는 그 응용프로그램 bridge의 장애가 다른 provider의 정상 경로를 막지 않고, 복구 후 Gateway 재시작 없이 다시 사용할 수 있음을 확인했다. bridge 장애와 MCP transport 자체의 장애는 같은 현상으로 취급하지 않고 각각 관찰된 범위로 구분했다.
+중지했던 upstream을 다시 실행했을 때 Gateway 프로세스를 재시작하지 않아도 provider discovery가 다시 이루어지고 도구 호출이 복구되었다.
+
+따라서 upstream 장애가 Gateway 전체 장애로 전파되지 않고, 사용 가능한 provider는 계속 동작함을 확인했다.
 
 ---
 
@@ -331,9 +288,8 @@ flowchart LR
 Remote MCP Client
 → Secure Tunnel
 → FastMCP Gateway
-→ search_tools(app, query)
-→ get_tool_schema(app, names)
-→ call_tool(app, name, arguments)
+→ search_tools
+→ call_tool
 → ProxyProvider
 → upstream MCP
 → application bridge
@@ -437,57 +393,39 @@ Client request
 
 ## 10. 최종 검증
 
-provider-aware routing과 progressive disclosure 적용 후 자동 테스트, live upstream 통합, 원격 OAuth 클라이언트, 장애 복구 및 성능 측정을 다시 수행했다.
+최종 구성에서는 단위 수준 검증과 실제 application 호출을 함께 수행했다.
 
 ### 10.1 자동 테스트
 
-최종 회귀 suite 결과는 다음과 같다.
-
-~~~text
-35 passed, 2 skipped
-~~~
-
-skip은 실행 조건이 없는 선택 시험으로 남겼고 성공으로 합산하지 않았다.
+최종 테스트 suite에서 14개 테스트가 모두 통과했다.
 
 검증 범위에는 다음 내용이 포함되었다.
 
-- public surface가 `search_tools`, `get_tool_schema`, `call_tool` 세 도구로 제한됨
-- app별 BM25 후보 격리
-- brief 검색에서 전체 `inputSchema`가 노출되지 않음
-- selected schema의 detailed/full 조회
-- 잘못된 app 및 cross-provider schema/call 거부
-- 숨겨진 원본 upstream 도구의 직접 호출 차단
+- public tool surface
+- Tool Search 및 call_tool 경로
 - namespace 일관성
-- OAuth scope가 적용된 catalog에서 schema와 call 우회 방지
-- HTTP/stdio upstream 검색·호출
+- HTTP upstream 검색·호출
+- 실제 headless application 조회
 - Gateway ↔ upstream RPC trace 연관
-- payload 미기록, 연결 실패·cancellation·rotation 등 기존 로깅 회귀
+- payload 미기록
+- 연결 실패 기록
+- cancellation 기록
+- 로그 append와 rotation
+- configuration error 기록
 
-### 10.2 Live upstream과 원격 클라이언트
+### 10.2 실제 서비스 검증
 
-live 통합 검증에서 두 provider의 전체 catalog가 namespaced 상태로 확인되었고, public surface는 synthetic tool 세 개만 반환했다.
+자동 테스트와 별도로 다음 실제 호출을 확인했다.
 
-실제 원격 OAuth 클라이언트에서는 다음을 다시 확인했다.
+- headless HTTP 응용프로그램의 Console 조회 성공
+- headless HTTP 응용프로그램의 scene 조회 성공
+- headless stdio 응용프로그램의 object/scene 조회 성공
+- 원격 MCP 클라이언트에서 HTTP upstream 실제 호출 성공
+- 원격 MCP 클라이언트에서 stdio upstream 실제 호출 성공
+- tunnel metrics에서 tools/call 요청이 성공 상태로 기록됨
+- FastMCP upstream RPC 로그에서 동일 실제 도구 호출의 성공 결과 확인
 
-- stdio 기반 provider를 대상으로 compact search 성공
-- 선택한 stdio 도구의 detailed schema 조회 성공
-- 같은 app으로 실제 응용프로그램 상태 조회 성공
-- HTTP provider를 대상으로 compact search 성공
-- HTTP MCP의 request-context 도구 호출 성공
-- stdio app을 지정한 상태에서 HTTP 도구 schema 조회 거부
-- stdio app을 지정한 상태에서 HTTP 도구 call 거부
-- 서버 schema 변경 후 클라이언트 metadata를 새로고침하면 세 public tool의 최신 입력 스키마가 반영됨
-
-HTTP provider의 request-context 성공은 MCP provider 경로의 복구를 입증하지만, 그 호출만으로 headless 응용프로그램 데이터까지 읽었다고 확대하지 않는다. HTTP headless application의 scene/Console 데이터 연결은 별도의 기존 live 통합 검증에서 확인했다.
-
-### 10.3 장애와 성능
-
-- 한 provider/bridge가 내려가도 다른 provider의 검색·실호출이 계속 동작했다.
-- 중단한 provider를 복구하면 Gateway를 재시작하지 않고 검색·호출이 다시 성공했다.
-- 동일 현재 구현에서 full discovery와 brief+selected schema를 비교했을 때 대표 질의의 discovery payload는 약 61.7%~85.6% 감소했다.
-- 대신 schema 조회 한 번이 추가되므로 단일 도구 선택 workflow의 discovery latency는 증가했다.
-
-최종 성공 판정은 `tools/list`나 포트 상태만이 아니라 **provider 경계, 실제 upstream 호출, 응용프로그램 결과, 장애 후 복구 및 권한 거부가 의도대로 동작하는지**를 함께 기준으로 했다.
+최종 성공 판정은 HTTP 상태나 tools/list 성공이 아니라 **최종 응용프로그램의 실제 데이터를 반환받았는지**를 기준으로 했다.
 
 ---
 
