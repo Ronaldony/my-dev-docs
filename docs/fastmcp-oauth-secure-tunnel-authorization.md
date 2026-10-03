@@ -223,7 +223,7 @@ FastMCP의 실제 route를 확인해 필요한 Protected Resource Metadata 경�
 
 Tunnel은 로컬 Protected Resource Metadata와 공개 Authorization Server Metadata를 조회했다. PKCE S256, CIMD 및 authorize/token/registration endpoint를 확인했다. 이 배포에서는 신뢰하는 loopback HTTP target에 대해 `HARPOON_ALLOW_PLAINTEXT_HTTP`를 명시적으로 사용했다.
 
-그 결과 resource와 metadata source에 대응하는 Harpoon target 두 개가 자동 등록됐다. 이 개수는 당시 구성의 관측값이지 모든 배포의 필수 개수가 아니다. 로컬 HTTP 허용을 공개 HTTP 사용이나 resource 검증 해제로 확대하지 않았다.
+그 결과 resource와 metadata source에 대응하는 Harpoon target 두 개가 자동 등록됐다. 이 개수는 당시 구성의 관측값이지 모든 배포의 필수 개수가 아니다. **공개 HTTPS Authorization Server는 Harpoon target으로 자동 등록되지 않았지만, tunnel-client가 그 공개 endpoint의 metadata를 직접 조회해 OAuth discovery를 완료했으므로 이를 실패로 판정하지 않았다.** `MCP_OAUTH_TRUSTED_ORIGINS`도 공개 AS를 Harpoon target으로 만드는 설정이 아니라 trust 경계를 제한하는 설정으로 구분했다. 로컬 HTTP 허용을 공개 HTTP 사용이나 resource 검증 해제로 확대하지 않았다.
 
 ### 6.2 Tunnel resource alias
 
