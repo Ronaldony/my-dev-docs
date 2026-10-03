@@ -6,9 +6,9 @@
 
 [다중 MCP Gateway 및 Headless 연결 문서](fastmcp-multi-upstream-headless-gateway.md)의 provider·namespace·Tool Search 구성을 전제로 한다. 이 문서는 그 구성 위에 추가한 인증·권한·외부 연결과 관련 이슈를 다룬다. 기존 문서의 서비스 호출 성공을 이번 OAuth 적용 후의 성공으로 합산하지 않는다.
 
-**확인된 최종 범위는 사용자 OAuth 재연결, provider-aware public surface discovery, Gateway/Tunnel 재시작 후 기존 인증 세션 재사용, 그리고 실제 ChatGPT에서 Blender·Unity 읽기 작업까지의 E2E 성공이다.** 실제 Auth0 access token을 의도적으로 만료시키는 시험이나 파괴적 쓰기 작업까지 모두 검증했다는 뜻은 아니다.
+**확인된 최종 범위는 사용자 OAuth 재연결과 인증된 `tools/list`의 도구 7개 반환이다.** 새 플러그인을 통한 최종 서비스 작업, 실제 쓰기·권한 거부, 만료 후 refresh까지 모두 검증했다는 뜻은 아니다.
 
-근거는 해당 작업의 설정·구현 조회, launcher와 Tunnel 진단, 운영 프로세스의 인증·라우팅 로그, Gateway/Tunnel 실제 재시작, 현재 ChatGPT 연결의 Tool Search·schema·call 결과, 테스트 종료 코드 및 Git 상태다. 환경 고유값은 역할로 치환했으며, 아래 `<…>` 표현은 실제 입력으로 바꿔야 하는 자리표시자다.
+근거는 해당 작업의 설정·구현 조회, launcher와 Tunnel 진단, 운영 프로세스의 인증·도구 목록 로그, 테스트 종료 코드 및 Git 상태다. 이번 문서화에서 운영 서버를 다시 실행한 것은 아니다. 환경 고유값은 역할로 치환했으며, 아래 `<…>` 표현은 실제 입력으로 바꿔야 하는 자리표시자다.
 
 ## 2. 구성요소와 연결 경계
 
@@ -90,7 +90,7 @@ Callback도 둘이다. Auth0에 등록하는 callback은 **공개 FastMCP OAuth 
 | 쓰기 도구 | `mcp.read`와 `mcp.write`를 모두 확인 |
 | 분류 불명 | 허용하지 않음; 확인된 override 또는 annotation으로 정책 결정 |
 
-도구 정책은 namespace 적용 후 이름을 사용했다. Scope 정책 transform을 Tool Search보다 먼저 구성하고, 전역 subject 검사는 `search_tools`, `get_tool_schema`, `call_tool`을 포함한 도구 목록에도 적용했다. 직접 노출 여부와 실행 권한은 다른 개념이다.
+도구 정책은 namespace 적용 후 이름을 사용했다. Scope 정책 transform을 Tool Search보다 먼저 구성하고, 전역 subject 검사는 `search_tools`, `call_tool`을 포함한 도구 목록에도 적용했다. 직접 노출 여부와 실행 권한은 다른 개념이다.
 
 `openid`·`offline_access`는 로그인·세션 관련 scope다. 두 값의 존재를 MCP 읽기·쓰기 권한으로 대신 취급하지 않았다. Refresh를 위한 설정이 준비된 상태와 실제 token 만료 후 refresh 성공은 구분했다.
 
@@ -251,114 +251,36 @@ flowchart TD
 
 허용 목록 변경 후 재기동된 운영 프로세스의 실제 요청에서 subject와 allowlist 지문이 일치하고 `subject_allowed=true`였으며, `tools/list`가 7개를 반환했다. 따라서 이 도구 0개 현상의 확인된 원인은 **로그인 identity와 allowlist의 불일치**다. 중간의 ChatGPT catalog·세션 오류 추정은 확정 원인으로 채택하지 않는다.
 
-## 8. OAuth lifecycle, 재시작 및 실제 E2E 검증
+## 8. 검증 방법과 결과
 
-초기 OAuth 연결 문제를 해결한 뒤에는 discovery만 확인하지 않고 세션 상태와 실제 서비스 호출까지 검증 범위를 확장했다.
+| 검증 대상 | 확인 방법 | 기록된 결과와 한계 |
+|---|---|---|
+| 로컬 MCP 인증 요구 | 인증정보 없는 `/mcp` 요청 | 401 및 `WWW-Authenticate` 확인 |
+| 공개 OAuth 경로 | metadata HTTP 조회 | 필요한 metadata의 200 응답 확인 |
+| MCP 비공개 경계 | Funnel host의 `/mcp` 조회 | 404 확인; 전체 네트워크 보안 검사와는 구분 |
+| 실제 설정 반영 | 오래된 Process 값 주입 후 launcher 재실행 | listener의 challenge·resource가 새 설정으로 바뀜 |
+| Tunnel discovery | doctor, OAuth 상태 및 Harpoon target 확인 | 필수 진단 통과, 해당 구성의 자동 target 두 개 확인 |
+| Resource alias | 허용 alias와 다른 host로 `/authorize` 요청 | 허용값은 consent, 다른 host는 `invalid_target` |
+| 사용자 OAuth 재연결 | 사용자 보고와 후속 운영 요청 대조 | 재연결 성공 보고 및 인증 context가 있는 MCP 요청 확인 |
+| Subject 권한 | 같은 운영 요청의 context와 catalog 대조 | `subject_allowed=false`/0개에서 `true`/7개로 전환 |
+| 최종 공개 도구 목록 | 운영 PID의 최상위 `tool_list_catalog` | 직접 노출 도구 5개와 wrapper 2개, `nested=false` |
+| 자동 테스트 | 인증·HTTP fixture·로깅을 포함한 전체 pytest 실행 | exit 0; skip 존재, 모든 시나리오 실행으로 표기하지 않음 |
+| 최종 listener 상태 | MCP·health 포트 및 `/readyz` | 두 listener 확인, readiness HTTP 200 |
+| 코드·임시물 정리 | 소스 조회, 임시 공간 목록, Git hash/diff/status | 임시 캡처 코드·파일 제거와 clean 상태 확인; 실행 중 코드 재로딩은 미확인 |
 
-### 8.1 현재 public surface
-
-provider-aware routing 적용 후 최상위 public tool은 다음 세 개로 정리됐다.
+최종 운영 요청에서 반환된 목록은 다음과 같다.
 
 ~~~text
+blender_get_blendfile_summary_missing_files
+blender_get_blendfile_summary_path_info
+blender_get_object_detail_summary
+blender_get_objects_summary
+blender_get_screenshot_of_window_as_image
 search_tools
-get_tool_schema
 call_tool
 ~~~
 
-과거에 확인했던 직접 노출 도구 5개와 wrapper 2개의 7-tool 목록은 **subject allowlist 문제를 해결하던 중간 상태의 관측값**이다. 현재 최종 surface로 사용하지 않는다.
-
-### 8.2 OAuth 상태 영속성
-
-FastMCP 4.0.5의 OAuth proxy 기본 저장소를 확인한 결과, 별도 `client_storage`를 지정하지 않으면 signing key에서 파생한 encryption key를 사용하는 암호화 파일 저장소가 사용됐다.
-
-~~~text
-stable signing key
-        ↓
-derived storage encryption key
-        ↓
-encrypted OAuth proxy file store
-        ├─ client registration
-        ├─ upstream token set
-        ├─ JTI mapping
-        ├─ refresh metadata
-        └─ authorization transaction state
-~~~
-
-실제 운영 상태에서는 동일 storage fingerprint 아래의 파일 수와 주요 collection 수를 재시작 전후 비교했다. 한 관측 시점에는 전체 52개 상태 파일, 등록 client 2개, JTI mapping 19개, refresh metadata 9개, upstream token set 9개가 있었고 Gateway/Tunnel 재시작 뒤에도 같은 수가 유지됐다.
-
-이 숫자는 해당 시점의 상태량이며 다른 설치에서 맞춰야 할 고정값이 아니다. 핵심 검증점은 **동일 signing key로 같은 encrypted store가 다시 열리고 기존 OAuth 상태를 읽을 수 있었는지**였다.
-
-### 8.3 Gateway/Tunnel 재시작 후 세션 재사용
-
-운영 Gateway와 Tunnel을 launcher의 정상 프로세스 관리 경로로 재시작했다.
-
-재시작 후 다음을 확인했다.
-
-- 로컬 Gateway OAuth metadata HTTP 200
-- Tunnel health HTTP 200
-- encrypted OAuth store 유지
-- 현재 ChatGPT 연결에서 별도 재로그인 없이 `search_tools` 성공
-- 같은 인증 상태로 `get_tool_schema` 성공
-- Blender와 Unity 실제 `call_tool` 성공
-
-따라서 적어도 이번 검증에서는 Gateway 프로세스 재시작이 기존 ChatGPT OAuth 상태를 즉시 무효화하지 않았고, persisted state를 사용해 기존 세션이 계속 동작했다.
-
-### 8.4 Refresh 실패 경계
-
-실제 사용자 refresh token을 파괴하지 않기 위해 refresh 실패 조건은 메모리 기반 격리 fixture에서 FastMCP 4.0.5의 실제 OAuthProxy 구현을 호출해 확인했다.
-
-| 시나리오 | 결과 |
-|---|---|
-| 존재하지 않는 refresh token 조회 | token 없음으로 처리, 재인증 경로 |
-| upstream refresh endpoint 실패 | `invalid_grant` |
-| refresh 실패 후 기존 mapping | 보존 |
-| 정상 refresh | 새 access/refresh token 발급 |
-| 이전 refresh token | mapping·metadata 제거 |
-| 새 refresh token | 조회 가능 |
-| 필수 credential 누락 | provider 생성 단계에서 fail-closed |
-
-실제 FastMCP 구현은 access token 검증 시 upstream token의 만료 시각과 threshold를 확인하고, refresh token이 있으면 transparent refresh를 시도한다. 또한 동일 프로세스 안에서는 token별 lock을 사용하고 refresh 뒤 저장소를 다시 읽는 경로가 있다.
-
-이 fixture 결과는 **실제 Auth0 access token을 강제로 만료시킨 장기 세션 실증과는 구분**한다.
-
-### 8.5 실제 ChatGPT 서비스 호출
-
-재시작 이후 현재 ChatGPT 연결에서 다음 대표 흐름을 실행했다.
-
-~~~text
-ChatGPT
-→ Secure MCP Tunnel
-→ authenticated FastMCP Gateway
-→ search_tools(app, ...)
-→ get_tool_schema(app, ...)
-→ call_tool(app, ...)
-→ ProxyProvider
-→ Blender / Unity MCP
-→ application result
-~~~
-
-대표적으로 Blender 파일 저장 상태·scene object 조회, Blender 문서 조회, Unity active scene 조회, Unity Console 조회를 실제로 수행했다.
-
-확대 E2E 구간에서는 public 호출 21건을 관측했다. 정상 요청 19건은 성공했고, 의도적으로 보낸 cross-provider 호출과 unknown app 요청 2건은 upstream 실행 전에 거부됐다.
-
-해당 public trace에서 authorization context는 모두 허용 상태였고, 실제 upstream `tools/call`은 provider 소속과 일치했다. cross-provider 실제 실행은 관측되지 않았다.
-
-### 8.6 검증 요약
-
-| 검증 대상 | 확인 방법 | 결과와 경계 |
-|---|---|---|
-| 로컬 MCP 인증 요구 | 인증정보 없는 `/mcp` | 401 및 challenge 확인 |
-| 공개 OAuth 경로 | metadata HTTP 조회 | 필요한 metadata 200 |
-| MCP 비공개 경계 | 공개 OAuth host의 `/mcp` | 404; 전체 네트워크 보안 검사와 구분 |
-| resource alias | 허용 alias와 다른 host authorize 비교 | 허용값 consent, 다른 host `invalid_target` |
-| subject 권한 | 운영 인증 context와 catalog 대조 | 불일치 시 0개, 수정 후 허용 |
-| 현재 public surface | 실제 ChatGPT tools | routing wrapper 3개 |
-| Gateway/Tunnel 재시작 | launcher 재기동 + health/metadata | 정상 |
-| OAuth state 재사용 | encrypted store + 실제 ChatGPT 호출 | 재로그인 없이 성공 |
-| refresh 실패/rotation | 격리 OAuthProxy fixture | fail-closed 및 rotation 확인 |
-| 실제 서비스 읽기 | ChatGPT에서 Blender/Unity call | 양쪽 성공 |
-| cross-provider 차단 | 실제 잘못된 app/tool 조합 | upstream 전 거부 |
-| 자동 회귀 | 전체 pytest 및 regression suite | 38 passed, 2 skipped; 별도 version suite 통과 |
+Blender namespace의 5개 도구는 당시 직접 노출 정책의 결과다. Unity를 포함한 검색형 도구 전체가 초기 목록에 나타나야 한다는 뜻이 아니다. 다만 **새 OAuth 플러그인에서 검색 후 실제 서비스 작업까지 완료한 최종 근거는 이번 기록에 없다.** 기존 Gateway 테스트나 이전 인증 방식의 호출과 구분한다.
 
 ## 9. 주요 이슈와 해결 과정
 
@@ -436,32 +358,15 @@ ChatGPT
 
 ## 10. 완료 범위와 남은 검증 경계
 
-최종적으로 **공개 OAuth 구성 → Tunnel discovery → resource alias 처리 → subject/scope 권한 → provider-aware tool discovery → Gateway/Tunnel 재시작 → persisted OAuth state 재사용 → 실제 ChatGPT 서비스 읽기**까지 연결했다.
-
-확인된 최종 상태는 다음과 같다.
-
-~~~text
-ChatGPT authenticated session
-        ↓
-Secure MCP Tunnel
-        ↓
-FastMCP OAuth / authorization
-        ↓
-provider-aware search / schema / call
-        ↓
-Blender / Unity upstream
-        ↓
-actual read result
-~~~
+이 작업에서는 **공개 OAuth 구성 → Tunnel discovery → resource alias 처리 → 인증된 MCP 요청 → subject 권한 확인 → 도구 목록 반환**까지 연결했다. 마지막 상태에서 FastMCP와 Tunnel listener 및 readiness도 확인했다.
 
 다음은 이번 기록만으로 완료를 주장하지 않는 범위다.
 
 | 경계 | 기록상 상태 |
 |---|---|
-| 실제 Auth0 access token을 의도적으로 만료시킨 자동 refresh | 실제 세션은 훼손하지 않음; FastMCP OAuthProxy 격리 fixture에서 refresh 성공·실패 경계 확인 |
-| 사용자 authorization 화면에서 취소한 뒤 복구 | 실제 사용자 세션 시험 안 함 |
-| 변경 후 다른 계정·축소 scope의 실제 ChatGPT 거부 | HTTP fixture에서 권한 필터를 확인했으나 실제 다른 사용자 로그인 부정 시험과 구분 |
-| 파괴적 write 작업의 실제 서비스 실행 | 의도적으로 수행하지 않음 |
-| 장기간 운영 후 refresh token 만료 | 장기 시간 경과 시험 안 함 |
+| 새 OAuth 플러그인의 실제 서비스 읽기·쓰기 | 최종 호출 근거 없음; 이전 Gateway 실행과 분리 |
+| 변경 후 다른 계정·축소 scope의 실제 ChatGPT 거부 시험 | 변경 전 subject 거부는 관측했으나, 변경 후 별도 부정 시험은 fixture와 구분 |
+| Token 만료 후 refresh와 장기 세션 유지 | 관련 설정은 적용했으나 만료 후 실증 근거 없음 |
+| 임시 캡처 코드 제거 후 실행 프로세스의 재로딩 | 디스크 정리·Git clean은 확인, 그 뒤 runtime 재로딩은 미확인 |
 
-따라서 이 문서의 종료 상태는 **OAuth 연결과 discovery 정상화**를 넘어, **재시작 후 인증 상태 지속과 실제 읽기 E2E까지 검증된 상태**다. 반면 실제 IdP token 만료·사용자 취소·파괴적 write 검증은 별도의 경계로 남긴다.
+따라서 이 문서의 종료 상태는 **OAuth 연결과 인증된 tool discovery 정상화**다. 도구 목록 확인을 모든 서비스 동작·세션 수명 검증으로 확대하지 않는다.
